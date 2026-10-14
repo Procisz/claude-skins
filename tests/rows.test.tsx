@@ -2,6 +2,7 @@ import type { On, RenderElement } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, Plugin } from 'claude-code/testing'
 
+import { DESIGN_TOOL } from '../hooks/designer'
 import { widthOf } from '../hooks/markdown'
 import { mermaidArt } from '../hooks/mermaid-art'
 import noir from '../hooks/themes/noir'
@@ -1265,6 +1266,83 @@ test('a session start says when a newer release is out, at most once a day', asy
   await unawaited()
   expect(fetches).toBe(1)
   expect(toasts.some(text => text.includes('0.1.4'))).toBe(false)
+})
+
+test('a session start waits for the design tool to be listed, so the first turn lists it', async ($, on) => {
+  const clock = stubEngine(on)
+  const order: string[] = []
+  on('session.start', () => ({ cwd: '/work' }))
+  on('command.register', () => ({ value: { command: 'skin' } }))
+  on('tool.register', async () => {
+    await clock.sleep(200)
+    order.push('listed')
+
+    return { value: { tool: 'mcp__skins__design' } }
+  })
+  on('config.list', () => ({ value: [] }))
+
+  const started = $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' }).then(() => {
+    order.push('started')
+  })
+  await clock.settle()
+  expect(order, 'the start waits while the tool is not listed yet').toEqual([])
+  await clock.advance(200)
+  expect(order, 'the start settles as soon as the tool is listed').toEqual(['listed', 'started'])
+  await started
+})
+
+test('a session start waits at most a second for a design tool that is never listed, and still registers it', async ($, on) => {
+  const clock = stubEngine(on)
+  const registered: unknown[] = []
+  let listed = () => {}
+  let isStarted = false
+  on('session.start', () => ({ cwd: '/work' }))
+  on('command.register', () => ({ value: { command: 'skin' } }))
+  on('tool.register', ($, e) => {
+    registered.push(e)
+
+    return new Promise<{ value: { tool: string } }>(resolve => {
+      listed = () => resolve({ value: { tool: 'mcp__skins__design' } })
+    })
+  })
+  on('config.list', () => ({ value: [] }))
+
+  const started = $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' }).then(() => {
+    isStarted = true
+  })
+  await clock.settle()
+  expect(isStarted, 'the start waits while the tool is not listed yet').toBe(false)
+  await clock.advance(1000)
+  expect(isStarted, 'a second on, the start goes on without the tool').toBe(true)
+  listed()
+  await started
+
+  expect(registered).toEqual([{ name: DESIGN_TOOL.name, description: DESIGN_TOOL.description, inputSchema: DESIGN_TOOL.inputSchema }])
+})
+
+test('a design tool that fails to register is logged to the debug log, and the rest of the start still runs', async ($, on) => {
+  const logs: { text: string; to: unknown }[] = []
+  let themeReads = 0
+  stubEngine(on, { log: true })
+  on('ui.log', ($, e) => {
+    logs.push({ text: e.text, to: e.to })
+
+    return { value: undefined }
+  })
+  on('session.start', () => ({ cwd: '/work' }))
+  on('command.register', () => ({ value: { command: 'skin' } }))
+  on('tool.register', () => ({ deny: 'refused in a test' }))
+  on('config.list', () => {
+    themeReads += 1
+
+    return { value: [] }
+  })
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await unawaited()
+
+  expect(logs.filter(log => log.text.startsWith('design tool:') && log.text.includes('refused in a test') && log.to === 'debug')).toHaveLength(1)
+  expect(themeReads, 'the theme probe after the refused registration still asks for the config').toBeGreaterThan(0)
 })
 
 test('a card settles by itself once its entrance ends, so a repaint of the stored drawing cannot replay it', async ($, on) => {

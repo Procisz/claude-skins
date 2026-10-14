@@ -38,6 +38,7 @@ const SETTINGS = 'skins-settings'
 const GALLERY = 'skins-gallery'
 const DESIGN = `mcp__skins__${DESIGN_TOOL.name}`
 const DESIGN_MATCH = /^mcp__skins__design$/
+const DESIGN_TOOL_WAIT_MS = 1000
 
 // A longer prompt keeps Claude Code's own drawing, which folds a big paste.
 const MAX_PROMPT = 4000
@@ -574,10 +575,21 @@ export const register: Register = on => {
       argumentHint: '[gallery | copy | copy code | name | list | off | calm | pin | unpin | share | rail | tables | shimmer | band | countdown | clip | markdown | quiet | charts | math | commands | shell | highlight | hints | links | fold | icons | prompt | words]',
       immediate: true,
     })
-    await $.tool.register({
-      name: DESIGN_TOOL.name,
-      description: DESIGN_TOOL.description,
-      inputSchema: DESIGN_TOOL.inputSchema,
+    const designTool = $.tool
+      .register({
+        name: DESIGN_TOOL.name,
+        description: DESIGN_TOOL.description,
+        inputSchema: DESIGN_TOOL.inputSchema,
+      })
+      .catch((error: unknown) => {
+        $.ui.log(`design tool: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
+      })
+    await new Promise<void>(resolve => {
+      const cap = $.clock.after(DESIGN_TOOL_WAIT_MS, resolve)
+      void designTool.then(() => {
+        cap.cancel()
+        resolve()
+      })
     })
     loadedFor = await sessionId($)
     await load($)
